@@ -1,10 +1,9 @@
 "use client";
 
-import "@/context/appkit";
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { useAppKit, useAppKitAccount } from "@reown/appkit/react";
 
 type PendingTx = {
   hash: string;
@@ -56,9 +55,9 @@ function gasToColorHex(gwei: number) {
 }
 
 export default function GweiHorseExperience() {
-  const { open } = useAppKit();
-  const { address: appkitAddress, isConnected } = useAppKitAccount();
-  const walletAddress = isConnected && appkitAddress ? appkitAddress : null;
+  const AppKitWalletPill = dynamic(() => import("@/components/AppKitWalletPill"), {
+    ssr: false,
+  });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const watchedAddressRef = useRef<string | null>(null);
@@ -96,6 +95,7 @@ export default function GweiHorseExperience() {
   );
   const pendingBySenderNonceRef = useRef<Map<string, PendingTx>>(new Map());
 
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [mineTx, setMineTx] = useState<MineTx | null>(null);
 
   const horseLaneHues = useMemo(() => {
@@ -107,6 +107,18 @@ export default function GweiHorseExperience() {
   useEffect(() => {
     mineTxRef.current = mineTx;
   }, [mineTx]);
+  useEffect(() => {
+    const onAccount = (evt: Event) => {
+      const ce = evt as CustomEvent<{ isConnected?: boolean; address?: string | null }>;
+      const next =
+        ce.detail?.isConnected && ce.detail.address ? ce.detail.address : null;
+      setWalletAddress(next);
+    };
+    window.addEventListener("appkit-account", onAccount as EventListener);
+    return () => {
+      window.removeEventListener("appkit-account", onAccount as EventListener);
+    };
+  }, []);
   useEffect(() => {
     if (!walletAddress) return;
     watchedAddressRef.current = walletAddress;
@@ -1074,23 +1086,6 @@ export default function GweiHorseExperience() {
     };
   }, [horseLaneHues]);
 
-  const connectWallet = async () => {
-    try {
-      await open();
-      showToastOutside("Opening wallet modal...");
-    } catch {
-      showToastOutside("Wallet connection failed.");
-    }
-  };
-
-  const showToastOutside = (msg: string) => {
-    const t = document.getElementById("toast");
-    if (!t) return;
-    t.textContent = msg;
-    t.classList.add("show");
-    setTimeout(() => t.classList.remove("show"), 2600);
-  };
-
   const isMineTxVisible = Boolean(mineTx);
 
   return (
@@ -1514,9 +1509,7 @@ export default function GweiHorseExperience() {
                 live • block <span id="hBlock">—</span>
               </span>
             </div>
-            <button className={`pill ${walletAddress ? "active" : ""}`} onClick={connectWallet}>
-              {walletAddress ? formatHashShort(walletAddress) : "Connect wallet"}
-            </button>
+            <AppKitWalletPill connectedAddress={walletAddress} />
           </div>
         </div>
 

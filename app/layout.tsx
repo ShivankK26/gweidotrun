@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import AppKitInit from "@/components/AppKitInit";
 
 export const metadata: Metadata = {
   title: "gwei.run",
@@ -18,7 +17,6 @@ export default function RootLayout({
       className="h-full antialiased"
     >
       <body className="min-h-full flex flex-col">
-        <AppKitInit />
         {children}
       </body>
     </html>
