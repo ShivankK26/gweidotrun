@@ -1,10 +1,10 @@
 "use client";
 
+import "@/context/appkit";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { ethers } from "ethers";
-import type { Eip1193Provider } from "ethers";
+import { useAppKit, useAppKitAccount } from "@reown/appkit/react";
 
 type PendingTx = {
   hash: string;
@@ -31,12 +31,6 @@ type MineTx = {
 
 type BetChoice = 0 | 1 | 2 | 3 | 99;
 
-declare global {
-  interface Window {
-    ethereum?: Eip1193Provider;
-  }
-}
-
 const TRACK_LENGTH = 80;
 const LANE_WIDTH = 3.2;
 const NUM_LANES = 8;
@@ -62,6 +56,10 @@ function gasToColorHex(gwei: number) {
 }
 
 export default function GweiHorseExperience() {
+  const { open } = useAppKit();
+  const { address: appkitAddress, isConnected } = useAppKitAccount();
+  const walletAddress = isConnected && appkitAddress ? appkitAddress : null;
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const watchedAddressRef = useRef<string | null>(null);
@@ -69,7 +67,6 @@ export default function GweiHorseExperience() {
   const trackMineFromAddressRef = useRef<boolean>(false);
 
   const mineTxRef = useRef<MineTx | null>(null);
-  const walletAddressRef = useRef<string | null>(null);
 
   const betRef = useRef<{
     offset: BetChoice;
@@ -100,7 +97,6 @@ export default function GweiHorseExperience() {
   );
   const pendingBySenderNonceRef = useRef<Map<string, PendingTx>>(new Map());
 
-  const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [mineTx, setMineTx] = useState<MineTx | null>(null);
 
   const horseLaneHues = useMemo(() => {
@@ -113,7 +109,19 @@ export default function GweiHorseExperience() {
     mineTxRef.current = mineTx;
   }, [mineTx]);
   useEffect(() => {
-    walletAddressRef.current = walletAddress;
+    if (!walletAddress) return;
+    watchedAddressRef.current = walletAddress;
+    trackMineFromAddressRef.current = true;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "eth_subscribe",
+          params: ["alchemy_pendingTransactions", { fromAddress: walletAddress }],
+        })
+      );
+    }
   }, [walletAddress]);
 
   useEffect(() => {
@@ -1040,6 +1048,19 @@ export default function GweiHorseExperience() {
             params: ["alchemy_pendingTransactions"],
           })
         );
+        if (watchedAddressRef.current) {
+          ws.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 2,
+              method: "eth_subscribe",
+              params: [
+                "alchemy_pendingTransactions",
+                { fromAddress: watchedAddressRef.current },
+              ],
+            })
+          );
+        }
       };
 
       ws.onmessage = (e) => {
@@ -1139,32 +1160,9 @@ export default function GweiHorseExperience() {
   }, [horseLaneHues]);
 
   const connectWallet = async () => {
-    if (!window.ethereum) {
-      showToastOutside("No wallet found. Install MetaMask or paste a tx hash.");
-      return;
-    }
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      await provider.send("eth_requestAccounts", []);
-      const signer = await provider.getSigner();
-      const address = await signer.getAddress();
-      setWalletAddress(address);
-      watchedAddressRef.current = address;
-      trackMineFromAddressRef.current = true;
-
-      // Optional filtered subscription (Alchemy specific) for this wallet.
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: 2,
-            method: "eth_subscribe",
-            params: ["alchemy_pendingTransactions", { fromAddress: address }],
-          })
-        );
-      }
-
-      showToastOutside(`Connected: ${formatHashShort(address)} — watching your address`);
+      await open();
+      showToastOutside("Opening wallet modal...");
     } catch {
       showToastOutside("Wallet connection failed.");
     }
