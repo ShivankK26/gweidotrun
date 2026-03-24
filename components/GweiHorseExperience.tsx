@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ethers } from "ethers";
 import type { Eip1193Provider } from "ethers";
 
@@ -10,6 +11,14 @@ type PendingTx = {
   from: string;
   nonce: number;
   effectiveGasGwei: number;
+};
+
+type PoolTx = {
+  hash: string;
+  from: string;
+  nonce: number;
+  gas: number;
+  value: string;
 };
 
 type MineTx = {
@@ -54,6 +63,10 @@ function gasToColorHex(gwei: number) {
 
 export default function GweiHorseExperience() {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const watchedAddressRef = useRef<string | null>(null);
+  const confirmPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const trackMineFromAddressRef = useRef<boolean>(false);
 
   const mineTxRef = useRef<MineTx | null>(null);
   const walletAddressRef = useRef<string | null>(null);
@@ -88,9 +101,7 @@ export default function GweiHorseExperience() {
   const pendingBySenderNonceRef = useRef<Map<string, PendingTx>>(new Map());
 
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
-  const [txHashInput, setTxHashInput] = useState("");
   const [mineTx, setMineTx] = useState<MineTx | null>(null);
-  const [activeBet, setActiveBet] = useState<BetChoice | null>(null);
 
   const horseLaneHues = useMemo(() => {
     const arr: number[] = [];
@@ -125,6 +136,28 @@ export default function GweiHorseExperience() {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     containerRef.current.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 1.5, -8);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.rotateSpeed = 0.6;
+    controls.zoomSpeed = 1.0;
+    controls.panSpeed = 0.8;
+    controls.minDistance = 6;
+    controls.maxDistance = 80;
+    controls.minPolarAngle = 0.1;
+    controls.maxPolarAngle = Math.PI * 0.48;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+    controls.touches = {
+      ONE: THREE.TOUCH.ROTATE,
+      TWO: THREE.TOUCH.DOLLY_PAN,
+    };
+    controls.update();
 
     // Lights
     const ambient = new THREE.AmbientLight(0xffeedd, 0.6);
@@ -602,8 +635,6 @@ export default function GweiHorseExperience() {
       });
     };
 
-    // Camera sway
-    let camTime = 0;
     const clock = new THREE.Clock();
     let rafId: number | null = null;
 
@@ -645,11 +676,7 @@ export default function GweiHorseExperience() {
       const dt = clock.getDelta();
       const elapsed = clock.getElapsedTime();
 
-      // Camera gentle sway
-      camTime += dt * 0.3;
-      camera.position.x = Math.sin(camTime * 0.4) * 2;
-      camera.position.y = 8 + Math.sin(camTime * 0.3) * 0.5;
-      camera.lookAt(Math.sin(camTime * 0.2) * 1, 1.5, -8);
+      controls.update();
 
       updateHorsePositions(dt);
 
@@ -693,10 +720,23 @@ export default function GweiHorseExperience() {
     };
     window.addEventListener("resize", onResize);
 
-    // ─── MEMPOOL + BLOCK STREAM (SSE) ──────────────────────────
-    const es = new EventSource("/api/eth/stream");
-    let lastMineReceiptCheck = 0;
+    // ─── MEMPOOL + BLOCK STREAM (ALCHEMY WS + HTTP POLL) ───────
+    const envKey =
+      process.env.NEXT_PUBLIC_ALCHEMY_KEY ??
+      process.env.VITE_ALCHEMY_KEY ??
+      "";
+    const wsUrl =
+      process.env.NEXT_PUBLIC_ALCHEMY_WS_URL ??
+      (envKey ? `wss://eth-mainnet.g.alchemy.com/v2/${envKey}` : "");
+    const httpUrl =
+      process.env.NEXT_PUBLIC_ALCHEMY_HTTP_URL ??
+      (envKey ? `https://eth-mainnet.g.alchemy.com/v2/${envKey}` : "");
+
+    const txPool = new Map<string, PoolTx>();
     let raceInitialized = false;
+    let lastKnownBlock: number | null = null;
+    let blockPoller: ReturnType<typeof setInterval> | null = null;
+    let raceRebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
     const addFeed = (icon: string, text: string, cls = "") => {
       const feed = document.getElementById("feed");
@@ -712,11 +752,9 @@ export default function GweiHorseExperience() {
     };
 
     const selectTopHorses = (): HorseData[] => {
-      const candidates = Array.from(pendingMapRef.current.values())
-        .map((v) => v.tx)
-        .sort((a, b) => b.effectiveGasGwei - a.effectiveGasGwei);
-
+      const candidates = Array.from(txPool.values()).sort((a, b) => b.gas - a.gas);
       const mine = mineTxRef.current;
+      const watched = watchedAddressRef.current?.toLowerCase();
       const out: HorseData[] = [];
 
       for (let i = 0; i < NUM_LANES; i++) {
@@ -724,11 +762,11 @@ export default function GweiHorseExperience() {
         if (!c) break;
         out.push({
           txHash: c.hash,
-          gasGwei: c.effectiveGasGwei,
+          gasGwei: c.gas,
           from: c.from,
           nonce: c.nonce,
-          isMine: false,
-          color: gasToColorHex(c.effectiveGasGwei),
+          isMine: watched != null && c.from.toLowerCase() === watched,
+          color: gasToColorHex(c.gas),
         });
       }
 
@@ -769,6 +807,28 @@ export default function GweiHorseExperience() {
 
       // Ensure we have uniqueish hashes (helps board readability).
       return out.slice(0, NUM_LANES);
+    };
+
+    const rebuildRace = () => {
+      const top = selectTopHorses();
+      setHorsesForRace(top);
+      updateBoard();
+
+      const mineHorse = top.find((h) => h.isMine);
+      if (mineHorse) {
+        const myGas = document.getElementById("myGas");
+        if (myGas) myGas.textContent = `${Math.round(mineHorse.gasGwei)}`;
+        const row = document.getElementById("myTxHashRow");
+        if (row) row.textContent = `${formatHashShort(mineHorse.txHash)} · watching`;
+      }
+    };
+
+    const scheduleRebuildRace = () => {
+      if (raceRebuildTimer) return;
+      raceRebuildTimer = setTimeout(() => {
+        raceRebuildTimer = null;
+        rebuildRace();
+      }, 180);
     };
 
     const refreshHorseRace = (blockNumber: number, timestamp: number) => {
@@ -816,8 +876,10 @@ export default function GweiHorseExperience() {
         }
       }
 
-      const top = selectTopHorses();
-      setHorsesForRace(top);
+      txPool.clear();
+      pendingMapRef.current.clear();
+      pendingBySenderNonceRef.current.clear();
+      setHorsesForRace(selectTopHorses());
       updateBoard();
       // Reset countdown UI immediately for responsiveness.
       const cd = document.getElementById("cdNum");
@@ -827,15 +889,21 @@ export default function GweiHorseExperience() {
     const checkMineReceipt = async () => {
       const mine = mineTxRef.current;
       if (!mine || raceRef.current.mineConfirmed) return;
+      if (!httpUrl) return;
 
-      const now = Date.now();
-      if (now - lastMineReceiptCheck < 2500) return;
-      lastMineReceiptCheck = now;
-
-      const r = await fetch(`/api/eth/tx/receipt?hash=${encodeURIComponent(mine.hash)}`).catch(() => null);
+      const r = await fetch(httpUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_getTransactionReceipt",
+          params: [mine.hash],
+          id: 1,
+        }),
+      }).catch(() => null);
       if (!r) return;
-      const json = (await r.json()) as { receipt: unknown };
-      const receipt = json.receipt as
+      const json = (await r.json()) as { result?: unknown };
+      const receipt = (json.result ?? null) as
         | { blockNumber?: string; status?: string }
         | null;
       if (!receipt || !receipt.blockNumber) return;
@@ -866,6 +934,11 @@ export default function GweiHorseExperience() {
         bet.resolved = true;
         showToast(won ? "Bet hit! Gold move!" : "Oof. Someone beat you to the block.");
       }
+
+      if (confirmPollerRef.current) {
+        clearInterval(confirmPollerRef.current);
+        confirmPollerRef.current = null;
+      }
     };
 
     // Drop detection: expire old pending entries.
@@ -881,63 +954,162 @@ export default function GweiHorseExperience() {
       }
     }, 3000);
 
-    es.addEventListener("pending", (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as PendingTx;
-      const key = `${data.from.toLowerCase()}:${data.nonce}`;
+    const ingestPendingTx = (tx: {
+      hash?: string;
+      from?: string;
+      nonce?: string;
+      gasPrice?: string;
+      maxFeePerGas?: string;
+      value?: string;
+    }) => {
+      if (!tx.hash || !tx.from || !tx.nonce) return;
+      const gasRaw = tx.gasPrice ?? tx.maxFeePerGas;
+      if (!gasRaw) return;
 
+      const gas = Number(BigInt(gasRaw) / BigInt(1_000_000_000));
+      if (!Number.isFinite(gas)) return;
+      const nonceNum = Number(BigInt(tx.nonce));
+
+      const poolTx: PoolTx = {
+        hash: tx.hash,
+        from: tx.from,
+        nonce: nonceNum,
+        gas,
+        value: tx.value ?? "0x0",
+      };
+
+      const key = `${poolTx.from.toLowerCase()}:${poolTx.nonce}`;
       const prev = pendingBySenderNonceRef.current.get(key);
+      const pendingLike: PendingTx = {
+        hash: poolTx.hash,
+        from: poolTx.from,
+        nonce: poolTx.nonce,
+        effectiveGasGwei: poolTx.gas,
+      };
+
+      txPool.set(poolTx.hash, poolTx);
+      pendingMapRef.current.set(poolTx.hash, { tx: pendingLike, seenAt: Date.now() });
+
       if (!prev) {
-        pendingBySenderNonceRef.current.set(key, data);
-        pendingMapRef.current.set(data.hash, { tx: data, seenAt: Date.now() });
-        addFeed("🐎", `${formatHashShort(data.hash)} entered · ${Math.round(data.effectiveGasGwei)}g`, "fe");
-      } else if (prev.hash.toLowerCase() !== data.hash.toLowerCase()) {
-        // Replacement / bump detection for same sender+nonce.
-        if (prev.effectiveGasGwei < data.effectiveGasGwei) {
-          pendingBySenderNonceRef.current.set(key, data);
-          pendingMapRef.current.set(data.hash, { tx: data, seenAt: Date.now() });
-          addFeed("⚡", `${formatHashShort(data.hash)} bumped → ${Math.round(data.effectiveGasGwei)}g`, "fe");
-        } else {
-          // Still track it, but don't spam a "bump" feed.
-          pendingMapRef.current.set(data.hash, { tx: data, seenAt: Date.now() });
+        pendingBySenderNonceRef.current.set(key, pendingLike);
+        addFeed("🐎", `${formatHashShort(poolTx.hash)} entered · ${Math.round(poolTx.gas)}g`, "fe");
+      } else if (prev.hash.toLowerCase() !== poolTx.hash.toLowerCase()) {
+        if (prev.effectiveGasGwei < poolTx.gas) {
+          pendingBySenderNonceRef.current.set(key, pendingLike);
+          addFeed("⚡", `${formatHashShort(poolTx.hash)} bumped → ${Math.round(poolTx.gas)}g`, "fe");
         }
-      } else {
-        pendingMapRef.current.set(data.hash, { tx: data, seenAt: Date.now() });
-      }
-    });
-
-    es.addEventListener("stats", (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as {
-        baseFeeGwei: number | null;
-        utilizationPct: number | null;
-        pendingCount: number;
-      };
-
-      const baseFee = document.getElementById("hBaseFee");
-      if (baseFee && data.baseFeeGwei != null) baseFee.textContent = Math.round(data.baseFeeGwei).toString();
-      const util = document.getElementById("hUtil");
-      if (util && data.utilizationPct != null) util.textContent = `${Math.round(data.utilizationPct)}%`;
-      const pending = document.getElementById("hPending");
-      if (pending) pending.textContent = data.pendingCount.toLocaleString();
-    });
-
-    es.addEventListener("block", (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as {
-        blockNumber: number;
-        timestamp: number;
-      };
-      if (!raceInitialized) {
-        raceInitialized = true;
-        showToast("Live race started. Watch the track!");
       }
 
-      refreshHorseRace(data.blockNumber, data.timestamp);
-      void checkMineReceipt();
-    });
+      if (trackMineFromAddressRef.current) {
+        const watched = watchedAddressRef.current?.toLowerCase();
+        if (watched && poolTx.from.toLowerCase() === watched) {
+          const mineTx: MineTx = {
+            hash: poolTx.hash,
+            from: poolTx.from,
+            nonce: poolTx.nonce,
+            valueWei: poolTx.value,
+            effectiveGasGwei: poolTx.gas,
+          };
+          setMineTx(mineTx);
+          mineTxRef.current = mineTx;
+          const row = document.getElementById("myTxHashRow");
+          if (row) row.textContent = `${formatHashShort(poolTx.hash)} · tracked from wallet`;
+          if (!confirmPollerRef.current) {
+            confirmPollerRef.current = setInterval(() => {
+              void checkMineReceipt();
+            }, 3000);
+          }
+        }
+      }
 
-    es.onerror = () => {
-      // If RPC creds are missing, the server endpoint likely errors. This is a best-effort UI.
-      showToast("Connection to mempool stream lost. Retrying…");
+      const pendingEl = document.getElementById("hPending");
+      if (pendingEl) pendingEl.textContent = txPool.size.toLocaleString();
+      scheduleRebuildRace();
     };
+
+    if (wsUrl) {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "eth_subscribe",
+            params: ["alchemy_pendingTransactions"],
+          })
+        );
+      };
+
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data) as {
+          params?: { result?: unknown };
+        };
+        const tx = data?.params?.result as
+          | {
+              hash?: string;
+              from?: string;
+              nonce?: string;
+              gasPrice?: string;
+              maxFeePerGas?: string;
+              value?: string;
+            }
+          | undefined;
+        if (!tx) return;
+        ingestPendingTx(tx);
+      };
+
+      ws.onerror = () => {
+        showToast("Mempool websocket disconnected");
+      };
+    } else {
+      showToast("Missing Alchemy key. Set NEXT_PUBLIC_ALCHEMY_KEY");
+    }
+
+    const pollBlock = async () => {
+      if (!httpUrl) return;
+      const res = await fetch(httpUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_blockNumber",
+          params: [],
+          id: 1,
+        }),
+      }).catch(() => null);
+      if (!res) return;
+
+      const json = (await res.json()) as { result?: string };
+      if (!json.result) return;
+      const latest = Number.parseInt(json.result, 16);
+
+      if (lastKnownBlock == null) {
+        lastKnownBlock = latest;
+        raceRef.current.currentBlockNumber = latest;
+        const hBlock = document.getElementById("hBlock");
+        if (hBlock) hBlock.textContent = latest.toLocaleString();
+        const raceBlock = document.getElementById("raceBlock");
+        if (raceBlock) raceBlock.textContent = (latest + 1).toLocaleString();
+        if (!raceInitialized) {
+          raceInitialized = true;
+          showToast("Live race started. Watch the track!");
+        }
+        return;
+      }
+
+      if (latest > lastKnownBlock) {
+        lastKnownBlock = latest;
+        refreshHorseRace(latest, Math.floor(Date.now() / 1000));
+        void checkMineReceipt();
+      }
+    };
+
+    void pollBlock();
+    blockPoller = setInterval(() => {
+      void pollBlock();
+    }, 2000);
 
     return () => {
       try {
@@ -946,8 +1118,18 @@ export default function GweiHorseExperience() {
         // ignore
       }
       clearInterval(dropInterval);
-      es.close();
+      if (blockPoller) clearInterval(blockPoller);
+      if (raceRebuildTimer) clearTimeout(raceRebuildTimer);
+      if (confirmPollerRef.current) {
+        clearInterval(confirmPollerRef.current);
+        confirmPollerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
       window.removeEventListener("resize", onResize);
+      controls.dispose();
       clearHorses();
       renderer.dispose();
       if (renderer.domElement && renderer.domElement.parentElement) {
@@ -967,7 +1149,22 @@ export default function GweiHorseExperience() {
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
       setWalletAddress(address);
-      showToastOutside(`Connected: ${formatHashShort(address)}`);
+      watchedAddressRef.current = address;
+      trackMineFromAddressRef.current = true;
+
+      // Optional filtered subscription (Alchemy specific) for this wallet.
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "eth_subscribe",
+            params: ["alchemy_pendingTransactions", { fromAddress: address }],
+          })
+        );
+      }
+
+      showToastOutside(`Connected: ${formatHashShort(address)} — watching your address`);
     } catch {
       showToastOutside("Wallet connection failed.");
     }
@@ -981,198 +1178,158 @@ export default function GweiHorseExperience() {
     setTimeout(() => t.classList.remove("show"), 2600);
   };
 
-  const enterTxHash = async () => {
-    const hash = txHashInput.trim();
-    if (!hash || !/^0x([A-Fa-f0-9]{64})$/.test(hash)) {
-      showToastOutside("Paste a valid 0x tx hash (66 chars).");
-      return;
-    }
-
-    showToastOutside("Loading tx…");
-    const res = await fetch(`/api/eth/tx/by-hash?hash=${encodeURIComponent(hash)}`).catch(() => null);
-    if (!res) {
-      showToastOutside("RPC unreachable. Check ETH_RPC_HTTP_URL.");
-      return;
-    }
-    const json = (await res.json()) as { tx: MineTx | null };
-    if (!json.tx) {
-      showToastOutside("Tx not found yet (or wrong network).");
-      return;
-    }
-
-    setMineTx(json.tx);
-    mineTxRef.current = json.tx;
-
-    // Reset bet resolution state for a fresh ride.
-    betRef.current = null;
-    setActiveBet(null);
-
-    showToastOutside("You’re in the race. Good luck!");
-  };
-
-  const placeBet = (choice: BetChoice) => {
-    const raceState = raceRef.current;
-    setActiveBet(choice);
-    const targetBase = raceState.raceTargetBlockNumber;
-    const targetBlockNumber =
-      choice === 99 ? targetBase + 4 : targetBase + choice;
-
-    betRef.current = {
-      offset: choice,
-      targetBlockNumber,
-      resolved: false,
-    };
-
-    const label = choice === 99 ? "stuck" : choice === 0 ? "this block" : `+${choice}`;
-    showToastOutside(`Bet placed: ${label}`);
-  };
-
-  const onBetButtonClass = (choice: BetChoice) =>
-    choice === activeBet ? "bet-btn active" : "bet-btn";
+  const isMineTxVisible = Boolean(mineTx);
 
   return (
     <>
       <style>{`
         * { box-sizing: border-box; margin: 0; padding: 0; }
         #canvas-container { position: fixed; inset: 0; }
-
-        /* HUD OVERLAY */
         .hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+        :root {
+          --gold: #c9953a;
+          --gold-light: #f0c96a;
+          --green: #52b788;
+          --red: #e86a4a;
+          --glass: rgba(10, 10, 18, 0.72);
+          --glass-border: rgba(255, 255, 255, 0.09);
+          --muted: rgba(255, 255, 255, 0.38);
+        }
 
-        .top-bar {
+        .header {
           position: absolute;
-          top: 0; left: 0; right: 0;
+          top: 0;
+          left: 0;
+          right: 0;
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 20px 28px 16px;
-          background: linear-gradient(180deg, rgba(10,10,15,0.92) 0%, transparent 100%);
+          padding: 18px 28px;
+          background: linear-gradient(180deg, rgba(10, 10, 18, 0.95) 0%, transparent 100%);
           pointer-events: all;
         }
 
         .logo {
-          font-family: 'Fraunces', serif;
+          font-family: "Fraunces", serif;
           font-size: 20px;
           font-weight: 900;
           letter-spacing: -0.3px;
-          color: #fff;
-        }
-        .logo span { color: #C9953A; }
-
-        .top-stats {
           display: flex;
-          gap: 20px;
+          gap: 6px;
           align-items: center;
         }
-        .top-stat { text-align: center; }
-        .top-stat-val {
-          font-size: 16px;
-          font-weight: 500;
-          color: #fff;
-          line-height: 1;
+        .logo em {
+          color: var(--gold);
+          font-style: normal;
         }
-        .top-stat-val.hot { color: #F0C96A; }
-        .top-stat-val.green { color: #52B788; }
-        .top-stat-lbl {
-          font-size: 9px;
-          color: rgba(255,255,255,0.4);
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          margin-top: 3px;
+        .header-right {
+          display: flex;
+          align-items: center;
+          gap: 10px;
         }
-
-        .live-pill {
+        .pill {
           display: flex;
           align-items: center;
           gap: 6px;
-          background: rgba(82, 183, 136, 0.15);
-          border: 1px solid rgba(82,183,136,0.3);
-          color: #52B788;
+          background: var(--glass);
+          border: 1px solid var(--glass-border);
+          border-radius: 40px;
+          padding: 6px 14px;
           font-size: 11px;
-          padding: 5px 12px;
-          border-radius: 20px;
+          backdrop-filter: blur(16px);
+          color: #fff;
+          cursor: pointer;
+          transition: border-color 0.2s, background 0.2s;
+          white-space: nowrap;
+        }
+        .pill:hover {
+          border-color: rgba(255, 255, 255, 0.2);
+          background: rgba(10, 10, 18, 0.88);
+        }
+        .pill.active {
+          border-color: rgba(201, 149, 58, 0.5);
+          background: rgba(201, 149, 58, 0.12);
+          color: var(--gold-light);
         }
         .live-dot {
-          width: 6px; height: 6px;
+          width: 6px;
+          height: 6px;
           border-radius: 50%;
-          background: #52B788;
+          background: var(--green);
           animation: blink 1.4s infinite;
         }
-        @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.2} }
+        @keyframes blink {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.25;
+          }
+        }
 
-        /* BET BAR — top center */
-        .bet-bar {
+        .block-bar {
           position: absolute;
           top: 72px;
           left: 50%;
           transform: translateX(-50%);
           display: flex;
-          align-items: center;
-          gap: 8px;
-          background: rgba(10,10,15,0.8);
-          border: 1px solid rgba(255,255,255,0.1);
+          background: var(--glass);
+          border: 1px solid var(--glass-border);
           border-radius: 40px;
-          padding: 6px 8px 6px 14px;
-          backdrop-filter: blur(12px);
+          overflow: hidden;
+          backdrop-filter: blur(16px);
           pointer-events: all;
-          white-space: nowrap;
         }
-        .bet-label {
-          font-size: 11px;
-          color: rgba(255,255,255,0.4);
+        .block-stat {
+          padding: 8px 20px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 2px;
+          border-right: 1px solid var(--glass-border);
         }
-        .bet-btn {
-          padding: 5px 14px;
-          border-radius: 20px;
-          font-size: 11px;
-          font-family: 'DM Mono', monospace;
-          cursor: pointer;
-          border: 1px solid rgba(255,255,255,0.15);
-          background: transparent;
-          color: rgba(255,255,255,0.6);
-          transition: all 0.15s;
+        .block-stat:last-child {
+          border-right: none;
         }
-        .bet-btn:hover { border-color: rgba(255,255,255,0.3); color: #fff; }
-        .bet-btn.active { background: #C9953A; border-color: #C9953A; color: #fff; font-weight: 500; }
-
-        /* COUNTDOWN ARC — center top */
-        .countdown-wrap {
-          position: absolute;
-          top: 118px;
-          left: 50%;
-          transform: translateX(-50%);
-          text-align: center;
-          pointer-events: none;
+        .block-stat-val {
+          font-size: 14px;
+          font-weight: 500;
+          color: #fff;
+          line-height: 1;
         }
-        .countdown-num {
-          font-family: 'Fraunces', serif;
-          font-size: 13px;
-          font-weight: 700;
-          color: rgba(255,255,255,0.5);
+        .block-stat-val.gold {
+          color: var(--gold-light);
         }
-        .countdown-lbl {
+        .block-stat-val.hot {
+          color: var(--red);
+        }
+        .block-stat-lbl {
           font-size: 9px;
-          color: rgba(255,255,255,0.25);
-          letter-spacing: 0.1em;
+          color: var(--muted);
           text-transform: uppercase;
+          letter-spacing: 0.08em;
         }
 
-        /* MY TX PANEL — bottom left */
         .my-tx {
           position: absolute;
-          bottom: 24px;
-          left: 24px;
-          background: rgba(10,10,15,0.85);
-          border: 1px solid rgba(201,149,58,0.4);
-          border-radius: 16px;
+          bottom: 28px;
+          left: 28px;
+          background: var(--glass);
+          border: 1px solid rgba(201, 149, 58, 0.3);
+          border-radius: 18px;
           padding: 16px 20px;
-          min-width: 300px;
-          backdrop-filter: blur(12px);
+          min-width: 220px;
+          backdrop-filter: blur(16px);
           pointer-events: all;
+          display: none;
+        }
+        .my-tx.visible {
+          display: block;
         }
         .my-tx-label {
           font-size: 10px;
-          color: rgba(255,255,255,0.4);
+          color: var(--muted);
           text-transform: uppercase;
           letter-spacing: 0.08em;
           margin-bottom: 10px;
@@ -1181,160 +1338,192 @@ export default function GweiHorseExperience() {
           justify-content: space-between;
           gap: 12px;
         }
-        .my-star { color: #C9953A; }
+        .my-star {
+          color: var(--gold-light);
+        }
         .my-tx-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 10px;
-          margin-top: 12px;
-          margin-bottom: 10px;
+          margin-bottom: 12px;
         }
         .my-tx-stat-val {
-          font-family: 'Fraunces', serif;
-          font-size: 22px;
+          font-family: "Fraunces", serif;
+          font-size: 24px;
           font-weight: 700;
           line-height: 1;
         }
-        .gold { color: #C9953A; }
-        .green { color: #52B788; }
-        .white { color: #fff; }
+        .gold {
+          color: var(--gold);
+        }
+        .green {
+          color: var(--green);
+        }
+        .white {
+          color: #fff;
+        }
         .my-tx-stat-lbl {
-          font-size: 10px;
-          color: rgba(255,255,255,0.4);
+          font-size: 9px;
+          color: var(--muted);
           margin-top: 3px;
           text-transform: uppercase;
-          letter-spacing: 0.06em;
+          letter-spacing: 0.07em;
         }
-
-        .mine-form { display: flex; flex-direction: column; gap: 10px; }
-        .connect-btn {
-          padding: 8px 12px;
-          border-radius: 12px;
-          font-size: 12px;
-          border: 1px solid rgba(255,255,255,0.15);
-          background: rgba(201,149,58,0.08);
-          color: #fff;
-          cursor: pointer;
-          font-family: 'DM Mono', monospace;
-          transition: all 0.15s;
-        }
-        .connect-btn:hover { border-color: rgba(255,255,255,0.3); }
-
-        .wallet-chip {
-          padding: 8px 12px;
-          border-radius: 12px;
-          font-size: 12px;
-          color: #C9953A;
-          border: 1px solid rgba(201,149,58,0.35);
-          background: rgba(201,149,58,0.08);
-        }
-
-        .tx-input-row { display: flex; gap: 8px; }
-        .tx-input {
-          flex: 1;
-          padding: 10px 12px;
-          border-radius: 12px;
-          font-size: 12px;
-          border: 1px solid rgba(255,255,255,0.14);
-          background: rgba(255,255,255,0.06);
-          color: #fff;
-          outline: none;
-          font-family: 'DM Mono', monospace;
-        }
-        .tx-input::placeholder { color: rgba(255,255,255,0.35); }
-        .tx-enter-btn {
-          padding: 10px 14px;
-          border-radius: 12px;
-          font-size: 12px;
-          border: 1px solid rgba(201,149,58,0.55);
-          background: rgba(201,149,58,0.12);
-          color: #C9953A;
-          cursor: pointer;
-          transition: all 0.15s;
-          font-family: 'DM Mono', monospace;
+        .tx-hash-row {
+          border-top: 1px solid var(--glass-border);
+          padding-top: 10px;
+          padding-top: 10px;
+          font-size: 10px;
+          color: var(--muted);
+          overflow: hidden;
+          text-overflow: ellipsis;
           white-space: nowrap;
         }
-        .tx-enter-btn:hover { background: rgba(201,149,58,0.2); }
 
-        .tx-hash-row {
-          margin-top: 2px;
-          padding-top: 10px;
-          border-top: 1px solid rgba(255,255,255,0.08);
-          font-size: 10px;
-          color: rgba(255,255,255,0.35);
-          word-break: break-all;
-        }
-
-        /* RACE BOARD — bottom right */
         .race-board {
           position: absolute;
-          bottom: 24px;
+          top: 50%;
           right: 24px;
-          background: rgba(10,10,15,0.85);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 16px;
+          transform: translateY(-50%);
+          background: var(--glass);
+          border: 1px solid var(--glass-border);
+          border-radius: 18px;
           overflow: hidden;
-          backdrop-filter: blur(12px);
-          min-width: 320px;
+          backdrop-filter: blur(16px);
+          min-width: 240px;
           pointer-events: all;
         }
         .race-board-head {
-          padding: 10px 16px;
-          border-bottom: 1px solid rgba(255,255,255,0.07);
+          padding: 11px 16px;
+          border-bottom: 1px solid var(--glass-border);
           display: flex;
           justify-content: space-between;
           align-items: center;
-          font-size: 11px;
-          color: rgba(255,255,255,0.5);
+          font-size: 10px;
+          color: var(--muted);
+          text-transform: uppercase;
+          letter-spacing: 0.09em;
         }
-        .race-board-head b { color: #fff; }
+        .race-board-head b {
+          color: #fff;
+        }
 
         .board-row {
           display: flex;
           align-items: center;
           gap: 10px;
-          padding: 7px 16px;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
+          padding: 8px 16px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.04);
           font-size: 11px;
           transition: background 0.2s;
         }
         .board-row:last-child { border-bottom: none; }
-        .board-row.mine { background: rgba(201,149,58,0.1); }
-        .board-pos { color: rgba(255,255,255,0.3); width: 16px; }
-        .board-name { flex: 1; color: rgba(255,255,255,0.7); }
-        .board-name.mine { color: #C9953A; font-weight: 500; }
-        .board-gas { color: #fff; font-weight: 500; }
-        .board-block { font-size: 10px; padding: 2px 8px; border-radius: 10px; }
-        .block-now { background: rgba(82,183,136,0.2); color: #52B788; }
-        .block-1   { background: rgba(201,149,58,0.15); color: #C9953A; }
-        .block-2   { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.4); }
-        .block-late { background: rgba(193,68,14,0.15); color: #E86A4A; }
+        .board-row.mine {
+          background: rgba(201, 149, 58, 0.1);
+        }
+        .board-pos {
+          color: var(--muted);
+          width: 16px;
+        }
+        .board-name {
+          flex: 1;
+          color: rgba(255, 255, 255, 0.65);
+        }
+        .board-name.mine {
+          color: var(--gold-light);
+          font-weight: 500;
+        }
+        .board-gas {
+          color: #fff;
+          font-weight: 500;
+        }
+        .board-block {
+          font-size: 10px;
+          padding: 2px 7px;
+          border-radius: 10px;
+        }
+        .block-now {
+          background: rgba(82, 183, 136, 0.18);
+          color: var(--green);
+        }
+        .block-1 {
+          background: rgba(201, 149, 58, 0.15);
+          color: var(--gold);
+        }
+        .block-2 {
+          background: rgba(255, 255, 255, 0.07);
+          color: var(--muted);
+        }
+        .block-late {
+          background: rgba(232, 106, 74, 0.15);
+          color: var(--red);
+        }
 
-        /* FEED — left side scrolling */
         .feed {
           position: absolute;
-          top: 50%;
-          left: 20px;
-          transform: translateY(-50%);
+          bottom: 28px;
+          left: 50%;
+          transform: translateX(-50%);
           display: flex;
-          flex-direction: column;
+          flex-direction: column-reverse;
           gap: 4px;
-          max-height: 240px;
+          max-width: 340px;
           overflow: hidden;
           pointer-events: none;
         }
         .feed-item {
           font-size: 10px;
-          color: rgba(255,255,255,0.35);
-          display: flex;
-          gap: 6px;
+          color: var(--muted);
+          background: var(--glass);
+          border: 1px solid var(--glass-border);
+          border-radius: 20px;
+          padding: 5px 14px;
+          backdrop-filter: blur(8px);
           animation: feedSlide 0.3s ease;
           white-space: nowrap;
+          text-align: center;
+          align-self: center;
         }
-        @keyframes feedSlide { from { opacity:0; transform:translateX(-10px); } to { opacity:1; transform:translateX(0); } }
-        .feed-item .fe { color: rgba(255,255,255,0.6); }
-        .feed-item .fc { color: #52B788; }
-        .feed-item .fd { color: #E86A4A; }
+        @keyframes feedSlide {
+          from {
+            opacity: 0;
+            transform: translateY(8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .feed-item .fe {
+          color: var(--gold-light);
+        }
+        .feed-item .fc {
+          color: var(--green);
+        }
+        .feed-item .fd {
+          color: var(--red);
+        }
+
+        .controls-hint {
+          position: absolute;
+          bottom: 28px;
+          right: 24px;
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+          gap: 6px;
+          max-width: 280px;
+          z-index: 20;
+        }
+        .ctrl-tag {
+          font-size: 10px;
+          color: var(--muted);
+          background: var(--glass);
+          border: 1px solid var(--glass-border);
+          border-radius: 8px;
+          padding: 4px 9px;
+          backdrop-filter: blur(8px);
+        }
 
         /* BLOCK FLASH */
         .block-flash {
@@ -1346,139 +1535,111 @@ export default function GweiHorseExperience() {
           opacity: 0;
           transition: opacity 0.1s;
         }
-        .block-flash.flash { opacity: 1; }
+        .block-flash.flash {
+          opacity: 1;
+        }
 
-        /* TOAST */
         .toast {
           position: fixed;
-          bottom: 100px;
+          top: 120px;
           left: 50%;
-          transform: translateX(-50%) translateY(40px);
-          background: rgba(10,10,15,0.95);
-          border: 1px solid rgba(201,149,58,0.5);
-          color: #C9953A;
-          padding: 10px 22px;
+          transform: translateX(-50%) translateY(-10px);
+          background: rgba(10, 10, 18, 0.96);
+          border: 1px solid rgba(201, 149, 58, 0.4);
+          color: var(--gold-light);
+          padding: 9px 22px;
           border-radius: 40px;
-          font-size: 13px;
-          font-family: 'DM Mono', monospace;
-          transition: transform 0.35s cubic-bezier(0.22,1,0.36,1), opacity 0.35s;
+          font-size: 12px;
+          transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
           z-index: 999;
           opacity: 0;
           white-space: nowrap;
           backdrop-filter: blur(12px);
           pointer-events: none;
         }
-        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+        .toast.show {
+          transform: translateX(-50%) translateY(0);
+          opacity: 1;
+        }
 
-        /* CONFETTI */
-        .conf-layer { position: fixed; inset: 0; pointer-events: none; z-index: 998; }
+        .conf-layer {
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          z-index: 998;
+        }
         .conf-p {
           position: absolute;
-          width: 7px; height: 7px;
+          width: 7px;
+          height: 7px;
           border-radius: 2px;
           animation: confFall 1.1s ease-in forwards;
         }
         @keyframes confFall {
-          0%   { transform: translateY(-10px) rotate(0deg); opacity: 1; }
-          100% { transform: translateY(100vh) rotate(540deg); opacity: 0; }
+          0% {
+            transform: translateY(-10px) rotate(0deg);
+            opacity: 1;
+          }
+          100% {
+            transform: translateY(100vh) rotate(540deg);
+            opacity: 0;
+          }
         }
       `}</style>
 
       <div id="canvas-container" ref={containerRef} />
 
       <div className="hud">
-        <div className="top-bar">
-          <div className="logo">🐎 <span>gwei</span>.run</div>
-
-          <div className="top-stats">
-            <div className="top-stat">
-              <div className="top-stat-val hot" id="hBaseFee">
-                —
-              </div>
-              <div className="top-stat-lbl">base fee</div>
-            </div>
-            <div className="top-stat">
-              <div className="top-stat-val hot" id="hUtil">
-                —
-              </div>
-              <div className="top-stat-lbl">utilization</div>
-            </div>
-            <div className="top-stat">
-              <div className="top-stat-val" id="hPending">
-                —
-              </div>
-              <div className="top-stat-lbl">pending txs</div>
-            </div>
-            <div className="top-stat">
-              <div className="top-stat-val" id="hBlock">
-                —
-              </div>
-              <div className="top-stat-lbl">current block</div>
-            </div>
+        <div className="header">
+          <div className="logo">
+            🐎 <em>gwei</em>.run
           </div>
-
-          <div className="live-pill">
-            <div className="live-dot"></div>
-            live mainnet
+          <div className="header-right">
+            <div className="pill">
+              <div className="live-dot"></div>
+              <span>
+                live • block <span id="hBlock">—</span>
+              </span>
+            </div>
+            <button className={`pill ${walletAddress ? "active" : ""}`} onClick={connectWallet}>
+              {walletAddress ? formatHashShort(walletAddress) : "Connect wallet"}
+            </button>
           </div>
         </div>
 
-        <div className="bet-bar">
-          <span className="bet-label">bet your block:</span>
-          <button className={onBetButtonClass(0)} onClick={() => placeBet(0)}>
-            this
-          </button>
-          <button className={onBetButtonClass(1)} onClick={() => placeBet(1)}>
-            +1
-          </button>
-          <button className={onBetButtonClass(2)} onClick={() => placeBet(2)}>
-            +2
-          </button>
-          <button className={onBetButtonClass(3)} onClick={() => placeBet(3)}>
-            +3
-          </button>
-          <button className={onBetButtonClass(99)} onClick={() => placeBet(99)}>
-            stuck
-          </button>
-        </div>
-
-        <div className="countdown-wrap">
-          <div className="countdown-num" id="cdNum">
-            ~12s
+        <div className="block-bar">
+          <div className="block-stat">
+            <div className="block-stat-val gold" id="hBaseFee">
+              —
+            </div>
+            <div className="block-stat-lbl">base fee</div>
           </div>
-          <div className="countdown-lbl">to next block</div>
+          <div className="block-stat">
+            <div className="block-stat-val hot" id="hUtil">
+              —
+            </div>
+            <div className="block-stat-lbl">utilization</div>
+          </div>
+          <div className="block-stat">
+            <div className="block-stat-val" id="hPending">
+              —
+            </div>
+            <div className="block-stat-lbl">pending</div>
+          </div>
+          <div className="block-stat">
+            <div className="block-stat-val" id="cdNum">
+              ~12s
+            </div>
+            <div className="block-stat-lbl">next block</div>
+          </div>
         </div>
 
         <div className="feed" id="feed"></div>
 
-        <div className="my-tx">
+        <div className={`my-tx ${isMineTxVisible ? "visible" : ""}`}>
           <div className="my-tx-label">
             <span>Your transaction</span>
-            <span className="my-star">★ YOUR TX</span>
-          </div>
-
-          <div className="mine-form">
-            {!walletAddress ? (
-              <button className="connect-btn" onClick={connectWallet}>
-                Connect wallet
-              </button>
-            ) : (
-              <div className="wallet-chip">
-                Wallet: {formatHashShort(walletAddress)}
-              </div>
-            )}
-
-            <div className="tx-input-row">
-              <input
-                className="tx-input"
-                value={txHashInput}
-                onChange={(e) => setTxHashInput(e.target.value)}
-                placeholder="Paste tx hash (0x...)"
-              />
-              <button className="tx-enter-btn" onClick={enterTxHash}>
-                Watch
-              </button>
-            </div>
+            <span className="my-star">★ tracked</span>
           </div>
 
           <div className="my-tx-grid">
@@ -1509,18 +1670,24 @@ export default function GweiHorseExperience() {
           </div>
 
           <div className="tx-hash-row" id="myTxHashRow">
-            {mineTx ? `${formatHashShort(mineTx.hash)} · ...` : "Paste a tx hash to enter the race."}
+            {mineTx ? `${formatHashShort(mineTx.hash)} · from connected wallet` : "Waiting for your pending tx..."}
           </div>
         </div>
 
         <div className="race-board">
           <div className="race-board-head">
+            <span>race</span>
             <span>
-              Race to block <b id="raceBlock">—</b>
+              block #<b id="raceBlock">—</b>
             </span>
-            <span id="raceCount">— horses</span>
           </div>
           <div id="boardRows"></div>
+        </div>
+
+        <div className="controls-hint">
+          <span className="ctrl-tag">scroll — zoom</span>
+          <span className="ctrl-tag">drag — orbit</span>
+          <span className="ctrl-tag">right drag — pan</span>
         </div>
       </div>
 
