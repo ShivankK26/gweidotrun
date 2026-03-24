@@ -61,7 +61,6 @@ export default function GweiHorseExperience() {
   const walletAddress = isConnected && appkitAddress ? appkitAddress : null;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const watchedAddressRef = useRef<string | null>(null);
   const confirmPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const trackMineFromAddressRef = useRef<boolean>(false);
@@ -112,16 +111,6 @@ export default function GweiHorseExperience() {
     if (!walletAddress) return;
     watchedAddressRef.current = walletAddress;
     trackMineFromAddressRef.current = true;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: 2,
-          method: "eth_subscribe",
-          params: ["alchemy_pendingTransactions", { fromAddress: walletAddress }],
-        })
-      );
-    }
   }, [walletAddress]);
 
   useEffect(() => {
@@ -728,22 +717,10 @@ export default function GweiHorseExperience() {
     };
     window.addEventListener("resize", onResize);
 
-    // ─── MEMPOOL + BLOCK STREAM (ALCHEMY WS + HTTP POLL) ───────
-    const envKey =
-      process.env.NEXT_PUBLIC_ALCHEMY_KEY ??
-      process.env.VITE_ALCHEMY_KEY ??
-      "";
-    const wsUrl =
-      process.env.NEXT_PUBLIC_ALCHEMY_WS_URL ??
-      (envKey ? `wss://eth-mainnet.g.alchemy.com/v2/${envKey}` : "");
-    const httpUrl =
-      process.env.NEXT_PUBLIC_ALCHEMY_HTTP_URL ??
-      (envKey ? `https://eth-mainnet.g.alchemy.com/v2/${envKey}` : "");
-
+    // ─── MEMPOOL + BLOCK STREAM (SERVER-SIDE PROXY) ────────────
+    const es = new EventSource("/api/eth/stream");
     const txPool = new Map<string, PoolTx>();
     let raceInitialized = false;
-    let lastKnownBlock: number | null = null;
-    let blockPoller: ReturnType<typeof setInterval> | null = null;
     let raceRebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
     const addFeed = (icon: string, text: string, cls = "") => {
@@ -897,21 +874,12 @@ export default function GweiHorseExperience() {
     const checkMineReceipt = async () => {
       const mine = mineTxRef.current;
       if (!mine || raceRef.current.mineConfirmed) return;
-      if (!httpUrl) return;
-
-      const r = await fetch(httpUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "eth_getTransactionReceipt",
-          params: [mine.hash],
-          id: 1,
-        }),
-      }).catch(() => null);
+      const r = await fetch(`/api/eth/tx/receipt?hash=${encodeURIComponent(mine.hash)}`).catch(
+        () => null
+      );
       if (!r) return;
-      const json = (await r.json()) as { result?: unknown };
-      const receipt = (json.result ?? null) as
+      const json = (await r.json()) as { receipt?: unknown };
+      const receipt = (json.receipt ?? null) as
         | { blockNumber?: string; status?: string }
         | null;
       if (!receipt || !receipt.blockNumber) return;
@@ -1035,102 +1003,53 @@ export default function GweiHorseExperience() {
       scheduleRebuildRace();
     };
 
-    if (wsUrl) {
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        ws.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "eth_subscribe",
-            params: ["alchemy_pendingTransactions"],
-          })
-        );
-        if (watchedAddressRef.current) {
-          ws.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: 2,
-              method: "eth_subscribe",
-              params: [
-                "alchemy_pendingTransactions",
-                { fromAddress: watchedAddressRef.current },
-              ],
-            })
-          );
-        }
+    es.addEventListener("pending", (ev) => {
+      const data = JSON.parse((ev as MessageEvent).data) as {
+        hash?: string;
+        from?: string;
+        nonce?: number;
+        effectiveGasGwei?: number;
       };
+      if (!data.hash || !data.from || data.nonce == null || data.effectiveGasGwei == null) return;
+      ingestPendingTx({
+        hash: data.hash,
+        from: data.from,
+        nonce: `0x${data.nonce.toString(16)}`,
+        gasPrice: `0x${Math.max(0, Math.round(data.effectiveGasGwei * 1e9)).toString(16)}`,
+        value: "0x0",
+      });
+    });
 
-      ws.onmessage = (e) => {
-        const data = JSON.parse(e.data) as {
-          params?: { result?: unknown };
-        };
-        const tx = data?.params?.result as
-          | {
-              hash?: string;
-              from?: string;
-              nonce?: string;
-              gasPrice?: string;
-              maxFeePerGas?: string;
-              value?: string;
-            }
-          | undefined;
-        if (!tx) return;
-        ingestPendingTx(tx);
+    es.addEventListener("stats", (ev) => {
+      const data = JSON.parse((ev as MessageEvent).data) as {
+        baseFeeGwei: number | null;
+        utilizationPct: number | null;
+        pendingCount: number;
       };
+      const baseFee = document.getElementById("hBaseFee");
+      if (baseFee && data.baseFeeGwei != null) baseFee.textContent = Math.round(data.baseFeeGwei).toString();
+      const util = document.getElementById("hUtil");
+      if (util && data.utilizationPct != null) util.textContent = `${Math.round(data.utilizationPct)}%`;
+      const pending = document.getElementById("hPending");
+      if (pending) pending.textContent = data.pendingCount.toLocaleString();
+    });
 
-      ws.onerror = () => {
-        showToast("Mempool websocket disconnected");
+    es.addEventListener("block", (ev) => {
+      const data = JSON.parse((ev as MessageEvent).data) as {
+        blockNumber: number;
+        timestamp: number;
       };
-    } else {
-      showToast("Missing Alchemy key. Set NEXT_PUBLIC_ALCHEMY_KEY");
-    }
-
-    const pollBlock = async () => {
-      if (!httpUrl) return;
-      const res = await fetch(httpUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "eth_blockNumber",
-          params: [],
-          id: 1,
-        }),
-      }).catch(() => null);
-      if (!res) return;
-
-      const json = (await res.json()) as { result?: string };
-      if (!json.result) return;
-      const latest = Number.parseInt(json.result, 16);
-
-      if (lastKnownBlock == null) {
-        lastKnownBlock = latest;
-        raceRef.current.currentBlockNumber = latest;
-        const hBlock = document.getElementById("hBlock");
-        if (hBlock) hBlock.textContent = latest.toLocaleString();
-        const raceBlock = document.getElementById("raceBlock");
-        if (raceBlock) raceBlock.textContent = (latest + 1).toLocaleString();
-        if (!raceInitialized) {
-          raceInitialized = true;
-          showToast("Live race started. Watch the track!");
-        }
-        return;
+      if (!raceInitialized) {
+        raceInitialized = true;
+        showToast("Live race started. Watch the track!");
       }
+      refreshHorseRace(data.blockNumber, data.timestamp);
+      void checkMineReceipt();
+    });
 
-      if (latest > lastKnownBlock) {
-        lastKnownBlock = latest;
-        refreshHorseRace(latest, Math.floor(Date.now() / 1000));
-        void checkMineReceipt();
-      }
+    es.onerror = () => {
+      showToast("Connection lost. Reconnecting stream...");
     };
-
-    void pollBlock();
-    blockPoller = setInterval(() => {
-      void pollBlock();
-    }, 2000);
 
     return () => {
       try {
@@ -1139,16 +1058,12 @@ export default function GweiHorseExperience() {
         // ignore
       }
       clearInterval(dropInterval);
-      if (blockPoller) clearInterval(blockPoller);
       if (raceRebuildTimer) clearTimeout(raceRebuildTimer);
       if (confirmPollerRef.current) {
         clearInterval(confirmPollerRef.current);
         confirmPollerRef.current = null;
       }
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      es.close();
       window.removeEventListener("resize", onResize);
       controls.dispose();
       clearHorses();

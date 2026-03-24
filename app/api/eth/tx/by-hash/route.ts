@@ -36,8 +36,15 @@ async function jsonRpcHttp<T>(
 }
 
 export async function GET(req: NextRequest) {
-  const HTTP_URL = process.env.ETH_RPC_HTTP_URL;
-  if (!HTTP_URL) return new Response("Missing ETH_RPC_HTTP_URL", { status: 500 });
+  const key = process.env.ALCHEMY_KEY;
+  const HTTP_URL =
+    process.env.ETH_RPC_HTTP_URL ??
+    (key ? `https://eth-mainnet.g.alchemy.com/v2/${key}` : undefined);
+  if (!HTTP_URL) {
+    return new Response("Missing env vars: set ALCHEMY_KEY or ETH_RPC_HTTP_URL", {
+      status: 500,
+    });
+  }
 
   const { searchParams } = new URL(req.url);
   const hash = searchParams.get("hash");

@@ -70,12 +70,17 @@ async function jsonRpcHttp<T>(
 }
 
 export async function GET(req: NextRequest) {
-  const WSS_URL = process.env.ETH_RPC_WSS_URL;
-  const HTTP_URL = process.env.ETH_RPC_HTTP_URL;
+  const key = process.env.ALCHEMY_KEY;
+  const WSS_URL =
+    process.env.ETH_RPC_WSS_URL ??
+    (key ? `wss://eth-mainnet.g.alchemy.com/v2/${key}` : undefined);
+  const HTTP_URL =
+    process.env.ETH_RPC_HTTP_URL ??
+    (key ? `https://eth-mainnet.g.alchemy.com/v2/${key}` : undefined);
 
   if (!WSS_URL || !HTTP_URL) {
     return new Response(
-      "Missing env vars: ETH_RPC_WSS_URL and/or ETH_RPC_HTTP_URL",
+      "Missing env vars: set ALCHEMY_KEY or ETH_RPC_HTTP_URL/ETH_RPC_WSS_URL",
       { status: 500 }
     );
   }
