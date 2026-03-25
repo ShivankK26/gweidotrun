@@ -736,18 +736,31 @@ export default function GweiHorseExperience() {
     let raceInitialized = false;
     let raceRebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const addFeed = (icon: string, text: string, cls = "") => {
-      const feed = document.getElementById("feed");
-      if (!feed) return;
-      const item = document.createElement("div");
-      item.className = "feed-item";
-      item.innerHTML = `<span>${icon}</span><span class="${cls}">${text}</span>`;
-      feed.insertBefore(item, feed.firstChild);
-      if (feed.children.length > 6) {
-        const last = feed.lastChild;
-        if (last) feed.removeChild(last);
+    function addFeedPill(
+      type: "enter" | "confirm" | "drop" | "bump" | "block",
+      icon: string,
+      hash: string | null,
+      label: string
+    ) {
+      const container = document.getElementById("feed-pills");
+      if (!container) return;
+
+      // Keep max 4 pills visible.
+      while (container.children.length >= 4) {
+        container.removeChild(container.firstChild as ChildNode);
       }
-    };
+
+      const pill = document.createElement("div");
+      pill.className = `feed-pill type-${type}`;
+      pill.innerHTML = `
+        <span style="font-size:13px">${icon}</span>
+        ${hash ? `<span class="pill-hash">${hash}</span>` : ""}
+        <span>${label}</span>
+      `;
+
+      container.appendChild(pill);
+      window.setTimeout(() => pill?.remove(), 4000);
+    }
 
     const selectTopHorses = (): HorseData[] => {
       const candidates = Array.from(txPool.values()).sort((a, b) => b.gas - a.gas);
@@ -841,6 +854,7 @@ export default function GweiHorseExperience() {
       }
 
       showToast(`⛓ Block #${blockNumber.toLocaleString()} mined — race reset`);
+      addFeedPill("block", "⛓", null, `block #${blockNumber.toLocaleString()} mined`);
 
       const hBlock = document.getElementById("hBlock");
       if (hBlock) hBlock.textContent = blockNumber.toLocaleString();
@@ -908,6 +922,12 @@ export default function GweiHorseExperience() {
 
       // If it confirms, show celebration + cross the finish line (visual).
       showToast(`🏁 Your tx confirmed in block #${receiptBlockNumber.toLocaleString()}${status === 0 ? " (failed)" : ""}!`);
+      addFeedPill(
+        "confirm",
+        "🏁",
+        formatHashShort(mine.hash),
+        `confirmed in block #${receiptBlockNumber.toLocaleString()}${status === 0 ? " (failed)" : ""}`
+      );
       spawnConfetti();
 
       // Resolve bet if we have an active bet.
@@ -938,7 +958,8 @@ export default function GweiHorseExperience() {
         if (now - v.seenAt > EXPIRY_MS) {
           pendingMapRef.current.delete(hash);
           const feedMine = mineTxRef.current && mineTxRef.current.hash.toLowerCase() === hash.toLowerCase();
-          if (!feedMine) addFeed("💨", `${formatHashShort(hash)} dropped`, "fd");
+          if (!feedMine)
+            addFeedPill("drop", "💨", formatHashShort(hash), "dropped — gas too low");
         }
       }
     }, 3000);
@@ -981,11 +1002,21 @@ export default function GweiHorseExperience() {
 
       if (!prev) {
         pendingBySenderNonceRef.current.set(key, pendingLike);
-        addFeed("🐎", `${formatHashShort(poolTx.hash)} entered · ${Math.round(poolTx.gas)}g`, "fe");
+        addFeedPill(
+          "enter",
+          "🐎",
+          formatHashShort(poolTx.hash),
+          `entered · ${Math.round(poolTx.gas)}g`
+        );
       } else if (prev.hash.toLowerCase() !== poolTx.hash.toLowerCase()) {
         if (prev.effectiveGasGwei < poolTx.gas) {
           pendingBySenderNonceRef.current.set(key, pendingLike);
-          addFeed("⚡", `${formatHashShort(poolTx.hash)} bumped → ${Math.round(poolTx.gas)}g`, "fe");
+          addFeedPill(
+            "bump",
+            "⚡",
+            formatHashShort(poolTx.hash),
+            `bumped → ${Math.round(poolTx.gas)}g`
+          );
         }
       }
 
@@ -1416,6 +1447,100 @@ export default function GweiHorseExperience() {
           color: var(--red);
         }
 
+        #feed-pills {
+          position: fixed;
+          bottom: 28px;
+          left: 50%;
+          transform: translateX(-50%);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 6px;
+          z-index: 50;
+          pointer-events: none;
+        }
+
+        .feed-pill {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 16px;
+          background: rgba(10, 10, 18, 0.82);
+          border: 1px solid rgba(255, 255, 255, 0.09);
+          border-radius: 40px;
+          font-size: 12px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+            "Liberation Mono", "Courier New", monospace;
+          color: rgba(255, 255, 255, 0.5);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          white-space: nowrap;
+          animation: pillIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards,
+            pillOut 0.3s ease 3.5s forwards;
+          pointer-events: none;
+        }
+
+        .feed-pill .pill-hash {
+          color: rgba(255, 255, 255, 0.65);
+          font-weight: 500;
+        }
+
+        .feed-pill.type-enter {
+          border-color: rgba(201, 149, 58, 0.25);
+        }
+        .feed-pill.type-enter .pill-hash {
+          color: #f0c96a;
+        }
+
+        .feed-pill.type-confirm {
+          border-color: rgba(82, 183, 136, 0.35);
+        }
+        .feed-pill.type-confirm .pill-hash {
+          color: #52b788;
+        }
+
+        .feed-pill.type-drop {
+          border-color: rgba(232, 106, 74, 0.2);
+        }
+        .feed-pill.type-drop .pill-hash {
+          color: #e86a4a;
+        }
+
+        .feed-pill.type-bump {
+          border-color: rgba(255, 255, 255, 0.12);
+        }
+
+        .feed-pill.type-block {
+          border-color: rgba(82, 183, 136, 0.4);
+          background: rgba(10, 30, 20, 0.88);
+        }
+        .feed-pill.type-block .pill-hash {
+          color: #52b788;
+          font-weight: 500;
+        }
+
+        @keyframes pillIn {
+          from {
+            opacity: 0;
+            transform: translateY(10px) scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+
+        @keyframes pillOut {
+          from {
+            opacity: 1;
+            transform: scale(1);
+          }
+          to {
+            opacity: 0;
+            transform: scale(0.95);
+          }
+        }
+
         .controls-hint {
           position: absolute;
           bottom: 28px;
@@ -1553,6 +1678,8 @@ export default function GweiHorseExperience() {
         </div>
 
         <div className="feed" id="feed"></div>
+
+        <div id="feed-pills" />
 
         <div className={`my-tx ${isMineTxVisible ? "visible" : ""}`}>
           <div className="my-tx-label">
