@@ -1616,9 +1616,10 @@ export default function GweiHorseExperience() {
 
         .toast {
           position: fixed;
-          top: 120px;
+          top: auto;
+          bottom: 78px;
           left: 50%;
-          transform: translateX(-50%) translateY(-10px);
+          transform: translateX(-50%) translateY(10px);
           background: rgba(10, 10, 18, 0.96);
           border: 1px solid rgba(201, 149, 58, 0.4);
           color: var(--gold-light);
@@ -1664,7 +1665,7 @@ export default function GweiHorseExperience() {
         /* Mobile optimization */
         @media (max-width: 640px) {
           .header {
-            padding: 14px 16px;
+            padding: 10px 14px;
           }
           .pill {
             padding: 6px 10px;
@@ -1672,7 +1673,7 @@ export default function GweiHorseExperience() {
           }
 
           .block-bar {
-            top: 64px;
+            top: 56px;
             left: 12px;
             right: 12px;
             transform: none;
@@ -1680,23 +1681,31 @@ export default function GweiHorseExperience() {
             -webkit-overflow-scrolling: touch;
           }
           .block-stat {
-            padding: 6px 12px;
+            padding: 5px 10px;
+            justify-content: center; /* keep Base fee / Utilization values aligned vertically */
+            flex: 1; /* make all menu blocks share equal width (mobile only) */
+            min-width: 0;
           }
           .block-stat-val {
-            font-size: 13px;
+            font-size: 12px;
           }
           .block-stat-lbl {
-            font-size: 8px;
+            font-size: 7px;
+          }
+
+          .race-board-head {
+            padding: 7px 14px;
+            font-size: 9px;
           }
 
           .race-board {
-            top: 118px;
+            top: 104px;
             transform: none;
             left: 12px;
             right: 12px;
             bottom: auto;
             min-width: 0;
-            max-height: 220px;
+            max-height: 280px;
             overflow: hidden;
           }
 
@@ -1712,7 +1721,7 @@ export default function GweiHorseExperience() {
 
           .race-rows.expanded {
             display: block;
-            max-height: 210px;
+            max-height: 260px;
             overflow: auto;
           }
 
@@ -1730,6 +1739,17 @@ export default function GweiHorseExperience() {
 
           .controls-hint {
             display: none;
+          }
+
+          .toast {
+            top: auto;
+            /* Match the bottom HUD area (where the mined/feed pills live). */
+            bottom: 78px;
+            transform: translateX(-50%) translateY(10px);
+          }
+
+          .toast.show {
+            transform: translateX(-50%) translateY(0);
           }
 
           #canvas-container {

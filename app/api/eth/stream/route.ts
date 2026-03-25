@@ -89,17 +89,27 @@ export async function GET(req: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Node's ReadableStream internals can behave badly if `controller.close()`
+      // is called multiple times (e.g. abort + websocket close/error races).
+      // Keep cleanup and enqueue idempotent.
+      let streamClosed = false;
+
       const push = (event: string, data: unknown) => {
-        controller.enqueue(
-          encoder.encode(
-            `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-          )
-        );
+        if (streamClosed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+            )
+          );
+        } catch {
+          // Ignore enqueue failures after stream close/teardown.
+        }
       };
 
       // Attempt to keep a steady stream even under low traffic.
       const heartbeat = setInterval(() => {
-        controller.enqueue(encoder.encode(`event: ping\ndata: {}\n\n`));
+        push("ping", {});
       }, 15000);
 
       const pendingSeen = new Map<string, number>();
@@ -113,13 +123,19 @@ export async function GET(req: NextRequest) {
       const ws = new WebSocket(WSS_URL);
 
       const cleanup = () => {
+        if (streamClosed) return;
+        streamClosed = true;
         clearInterval(heartbeat);
         try {
           ws.close();
         } catch {
           // ignore
         }
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // ignore
+        }
       };
 
       req.signal.addEventListener("abort", cleanup);
