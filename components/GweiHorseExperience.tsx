@@ -98,6 +98,8 @@ export default function GweiHorseExperience() {
 
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [mineTx, setMineTx] = useState<MineTx | null>(null);
+  const [raceExpanded, setRaceExpanded] = useState(true);
+  const [raceExpandedManually, setRaceExpandedManually] = useState(false);
 
   const horseLaneHues = useMemo(() => {
     const arr: number[] = [];
@@ -108,6 +110,14 @@ export default function GweiHorseExperience() {
   useEffect(() => {
     mineTxRef.current = mineTx;
   }, [mineTx]);
+  useEffect(() => {
+    const onResize = () => {
+      const expanded = window.innerWidth > 640;
+      if (!raceExpandedManually) setRaceExpanded(expanded);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [raceExpandedManually]);
   useEffect(() => {
     const onAccount = (evt: Event) => {
       const ce = evt as CustomEvent<{ isConnected?: boolean; address?: string | null }>;
@@ -1351,6 +1361,34 @@ export default function GweiHorseExperience() {
           color: #fff;
         }
 
+        .race-head-right {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .race-dropdown-btn {
+          display: none;
+          width: 28px;
+          height: 22px;
+          border-radius: 10px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(10, 10, 18, 0.45);
+          color: var(--gold-light);
+          cursor: pointer;
+          font-family: "DM Mono", monospace;
+          line-height: 1;
+          padding: 0;
+        }
+        .race-dropdown-btn:active {
+          transform: scale(0.98);
+        }
+
+        .race-rows {
+          /* Default: behave like normal list */
+          display: block;
+        }
+
         .board-row {
           display: flex;
           align-items: center;
@@ -1622,6 +1660,82 @@ export default function GweiHorseExperience() {
             opacity: 0;
           }
         }
+
+        /* Mobile optimization */
+        @media (max-width: 640px) {
+          .header {
+            padding: 14px 16px;
+          }
+          .pill {
+            padding: 6px 10px;
+            font-size: 10px;
+          }
+
+          .block-bar {
+            top: 64px;
+            left: 12px;
+            right: 12px;
+            transform: none;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+          }
+          .block-stat {
+            padding: 6px 12px;
+          }
+          .block-stat-val {
+            font-size: 13px;
+          }
+          .block-stat-lbl {
+            font-size: 8px;
+          }
+
+          .race-board {
+            top: 118px;
+            transform: none;
+            left: 12px;
+            right: 12px;
+            bottom: auto;
+            min-width: 0;
+            max-height: 220px;
+            overflow: hidden;
+          }
+
+          .race-dropdown-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+          }
+
+          .race-rows.collapsed {
+            display: none;
+          }
+
+          .race-rows.expanded {
+            display: block;
+            max-height: 210px;
+            overflow: auto;
+          }
+
+          .feed {
+            bottom: 108px;
+            max-width: 92vw;
+          }
+
+          .my-tx {
+            left: 12px;
+            right: 12px;
+            bottom: 60px;
+            min-width: 0;
+          }
+
+          .controls-hint {
+            display: none;
+          }
+
+          #canvas-container {
+            touch-action: none;
+          }
+        }
       `}</style>
 
       <div id="canvas-container" ref={containerRef} />
@@ -1632,8 +1746,8 @@ export default function GweiHorseExperience() {
             <Image
               src="/gwei-run-logo.svg"
               alt="gwei.run"
-              width={200}
-              height={34}
+              width={260}
+              height={44}
               className="logo-img"
               unoptimized
               priority
@@ -1722,11 +1836,26 @@ export default function GweiHorseExperience() {
         <div className="race-board">
           <div className="race-board-head">
             <span>race</span>
-            <span>
-              block #<b id="raceBlock">—</b>
-            </span>
+            <div className="race-head-right">
+              <span>
+                block #<b id="raceBlock">—</b>
+              </span>
+              <button
+                className="race-dropdown-btn"
+                onClick={() => {
+                  setRaceExpandedManually(true);
+                  setRaceExpanded((v) => !v);
+                }}
+                aria-label="Toggle race list"
+              >
+                {raceExpanded ? "−" : "+"}
+              </button>
+            </div>
           </div>
-          <div id="boardRows"></div>
+          <div
+            id="boardRows"
+            className={`race-rows ${raceExpanded ? "expanded" : "collapsed"}`}
+          ></div>
         </div>
 
         <div className="controls-hint">
