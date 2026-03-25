@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
@@ -1126,6 +1127,9 @@ export default function GweiHorseExperience() {
           gap: 6px;
           align-items: center;
         }
+        .logo-img {
+          display: block;
+        }
         .logo em {
           color: var(--gold);
           font-style: normal;
@@ -1500,7 +1504,15 @@ export default function GweiHorseExperience() {
       <div className="hud">
         <div className="header">
           <div className="logo">
-            🐎 <em>gwei</em>.run
+            <Image
+              src="/gwei-run-logo.svg"
+              alt="gwei.run"
+              width={200}
+              height={34}
+              className="logo-img"
+              unoptimized
+              priority
+            />
           </div>
           <div className="header-right">
             <div className="pill">

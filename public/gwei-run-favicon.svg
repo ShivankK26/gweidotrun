@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Dark background circle -->
+  <rect width="32" height="32" rx="7" fill="#0a0a0f"/>
+
+  <!-- Horse silhouette centered, simplified for small size -->
+  <g transform="translate(3, 2) scale(0.82)">
+    <!-- Body -->
+    <ellipse cx="16" cy="20" rx="9" ry="6.5" fill="#C9953A"/>
+    <!-- Rump -->
+    <ellipse cx="23" cy="19" rx="4" ry="5.5" fill="#C9953A"/>
+    <!-- Neck -->
+    <polygon points="10,16 14,9 19,13 15,19" fill="#C9953A"/>
+    <!-- Head -->
+    <ellipse cx="12" cy="7.5" rx="5" ry="4.5" fill="#C9953A"/>
+    <!-- Snout -->
+    <ellipse cx="8" cy="9.5" rx="3" ry="2.2" fill="#A07020"/>
+    <!-- Eye -->
+    <circle cx="10.5" cy="6.5" r="1.1" fill="#0a0a0f"/>
+    <circle cx="10.8" cy="6.2" r="0.35" fill="white" opacity="0.9"/>
+    <!-- Ear -->
+    <polygon points="15,4 16.5,1 18,4" fill="#C9953A"/>
+    <!-- Mane -->
+    <path d="M14 5.5 Q11 10 12 15" stroke="#7a5010" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+    <!-- Tail -->
+    <path d="M27 17 Q32 13 30 21 Q29 25 26 22" fill="#7a5010"/>
+    <!-- Legs -->
+    <line x1="10" y1="26" x2="7"  y2="33" stroke="#A07020" stroke-width="2.2" stroke-linecap="round"/>
+    <line x1="13" y1="26" x2="12" y2="33" stroke="#A07020" stroke-width="2.2" stroke-linecap="round"/>
+    <line x1="19" y1="26" x2="21" y2="33" stroke="#A07020" stroke-width="2.2" stroke-linecap="round"/>
+    <line x1="22" y1="25" x2="26" y2="32" stroke="#A07020" stroke-width="2.2" stroke-linecap="round"/>
+    <!-- Jockey (simplified dot) -->
+    <circle cx="16" cy="13" r="3" fill="#E8A040"/>
+    <circle cx="16" cy="9.5" r="2.5" fill="#F0C070"/>
+  </g>
+
+  <!-- Gold accent dot bottom right -->
+  <circle cx="27" cy="27" r="3" fill="#C9953A" opacity="0.85"/>
+</svg>

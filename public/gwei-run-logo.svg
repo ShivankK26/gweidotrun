@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 52" fill="none">
+
+  <!-- Horse silhouette (geometric) -->
+  <g transform="translate(2,4)">
+    <!-- Body -->
+    <ellipse cx="22" cy="28" rx="13" ry="9" fill="#C9953A"/>
+    <!-- Rump bump -->
+    <ellipse cx="32" cy="26" rx="6" ry="7" fill="#C9953A"/>
+    <!-- Chest -->
+    <ellipse cx="12" cy="26" rx="5.5" ry="7" fill="#B8842E"/>
+    <!-- Neck -->
+    <polygon points="13,21 19,12 25,17 19,25" fill="#C9953A"/>
+    <!-- Head -->
+    <ellipse cx="16" cy="10" rx="6.5" ry="5.5" fill="#C9953A"/>
+    <!-- Snout -->
+    <ellipse cx="10.5" cy="12.5" rx="4" ry="3" fill="#A87020"/>
+    <!-- Nostril -->
+    <ellipse cx="9" cy="13" rx="1" ry="0.7" fill="#7a5010" opacity="0.7"/>
+    <!-- Ear -->
+    <polygon points="20,5 22,1 24,5" fill="#C9953A"/>
+    <!-- Eye -->
+    <circle cx="14" cy="9" r="1.4" fill="#0a0a0f"/>
+    <circle cx="14.4" cy="8.6" r="0.4" fill="white" opacity="0.8"/>
+    <!-- Mane streaks -->
+    <path d="M19 7 Q15 13 16 20" stroke="#7a5010" stroke-width="3" stroke-linecap="round" fill="none"/>
+    <path d="M17 8 Q13 14 14 21" stroke="#9a6820" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.5"/>
+    <!-- Tail -->
+    <path d="M37 23 Q46 18 44 28 Q42 36 37 31" fill="#7a5010"/>
+    <!-- Legs - galloping pose -->
+    <line x1="14" y1="35" x2="9"  y2="45" stroke="#A07020" stroke-width="3" stroke-linecap="round"/>
+    <line x1="18" y1="36" x2="15" y2="46" stroke="#A07020" stroke-width="3" stroke-linecap="round"/>
+    <line x1="25" y1="35" x2="29" y2="45" stroke="#A07020" stroke-width="3" stroke-linecap="round"/>
+    <line x1="29" y1="34" x2="35" y2="43" stroke="#A07020" stroke-width="3" stroke-linecap="round"/>
+    <!-- Hooves -->
+    <rect x="6"  y="44" width="6"  height="2.5" rx="1" fill="#2a1a08"/>
+    <rect x="12" y="45" width="6"  height="2.5" rx="1" fill="#2a1a08"/>
+    <rect x="26" y="44" width="6"  height="2.5" rx="1" fill="#2a1a08"/>
+    <rect x="32" y="42" width="6"  height="2.5" rx="1" fill="#2a1a08"/>
+    <!-- Jockey body -->
+    <ellipse cx="21" cy="18" rx="4.5" ry="4" fill="#E8A040"/>
+    <!-- Jockey head -->
+    <circle cx="21" cy="12.5" r="3.5" fill="#F5CBA0"/>
+    <!-- Helmet -->
+    <path d="M17.5 11 Q21 6 24.5 11 Q23 9 21 9 Q19 9 17.5 11Z" fill="#C9953A"/>
+    <!-- Speed lines -->
+    <line x1="2"  y1="38" x2="10" y2="38" stroke="#C9953A" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/>
+    <line x1="0"  y1="41" x2="7"  y2="41" stroke="#C9953A" stroke-width="0.8" stroke-linecap="round" opacity="0.25"/>
+    <line x1="3"  y1="44" x2="8"  y2="44" stroke="#C9953A" stroke-width="0.6" stroke-linecap="round" opacity="0.15"/>
+  </g>
+
+  <!-- GWEI — bold italic serif -->
+  <text x="56" y="38"
+    font-size="28"
+    font-style="italic"
+    font-weight="700"
+    font-family="Georgia, 'Times New Roman', serif"
+    fill="#FFFFFF"
+    letter-spacing="-0.5">gwei</text>
+
+  <!-- .run — monospace gold -->
+  <text x="147" y="38"
+    font-size="24"
+    font-weight="400"
+    font-family="'Courier New', Courier, monospace"
+    fill="#C9953A"
+    letter-spacing="0.5">.run</text>
+
+</svg>
